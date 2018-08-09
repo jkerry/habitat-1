@@ -38,6 +38,9 @@ steps:
       queue: omnibus
       os: Darwin
       "os:version": 10.11 # Build statically on the oldest thing we can
+    plugins:
+      s3-secrets#v1.3.0:
+        bucket: chef-cd-citadel
 
   - wait
 
