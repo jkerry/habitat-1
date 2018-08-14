@@ -5,40 +5,20 @@ param
   # Set an empty version variable, signaling we want the latest release
   $Filter = '',
   # version to install. defaults to latest
-  $version = ''
+  $version = '',
+  [switch]
+  $Help,
+
+  # Temporary Hackery
+  [switch]
+  $validate_archive
+
 )
 
 $BT_ROOT="https://api.bintray.com/content/habitat"
 $BT_SEARCH="https://api.bintray.com/packages/habitat"
 $os = $null
 $arch = $null
-
-function MAIN() {
-    Write-Host -ForegroundColor Green "Installing Habitat 'hab' program"
-    $platform_information = Get-Platform
-    $workdir = Create-WorkDir
-    $platform = Get-Platform
-    $btv = Get-Version -version $version -platform $platform
-    Download-Archive -btv $btv -platform $platform -workdir $workdir
-    #   verify_archive
-    #   extract_archive
-    #   install_hab
-    #   print_hab_version
-    #   info "Installation of Habitat 'hab' program complete."
-}
-
-function Create-WorkDir(){
-   $workdir = New-TemporaryDirectory
-   cd $workdir.FullName
-   #TODO:  install.sh has a trap here for cleaning things up
-   return $workdir.FullName
-}
-
-function New-TemporaryDirectory {
-    $parent = [System.IO.Path]::GetTempPath()
-    $name = [System.IO.Path]::GetRandomFileName()
-    New-Item -ItemType Directory -Path (Join-Path $parent "hab-$name")
-}
 
 # print_help() {
 #   need_cmd cat
@@ -67,6 +47,36 @@ function New-TemporaryDirectory {
 
 # USAGE
 # }
+
+function MAIN() {
+    if($Help){
+        #print help and exit
+    }
+    Write-Host -ForegroundColor Green "Installing Habitat 'hab' program"
+    $platform_information = Get-Platform
+    $workdir = Create-WorkDir
+    $platform = Get-Platform
+    $btv = Get-Version -version $version -platform $platform
+    $files = Download-Archive -btv $btv -platform $platform -workdir $workdir
+    Verify-Archive -files $files
+    $bin_dir = Extract-Archive -files $files -workdir $workdir -platform $platform_information
+    Install-Hab -BinDir $bin_dir
+    #   print_hab_version
+    #   info "Installation of Habitat 'hab' program complete."
+}
+
+function Create-WorkDir(){
+   $workdir = New-TemporaryDirectory
+   cd $workdir.FullName
+   #TODO:  install.sh has a trap here for cleaning things up
+   return $workdir.FullName
+}
+
+function New-TemporaryDirectory {
+    $parent = [System.IO.Path]::GetTempPath()
+    $name = [System.IO.Path]::GetRandomFileName()
+    New-Item -ItemType Directory -Path (Join-Path $parent "hab-$name")
+}
 
 function Get-Platform() {
     $os = $null
@@ -128,7 +138,7 @@ function Get-Version($version, $platform) {
     return $btv
 }
 
-function Download-Archive($btv, $platform, $workdir) {
+function Download-Archive($btv, $platform, $workdir, $validate_checksum) {
     $arch = $platform['arch']
     $sys = $platform['sys']
     $ext = $platform['ext']
@@ -140,59 +150,99 @@ function Download-Archive($btv, $platform, $workdir) {
     Write-Debug "bin url: $_hab_url"
     Write-Debug "checksum url: $_sha_url"
     Invoke-WebRequest "${_hab_url}" -OutFile "${workdir}/hab-latest.${ext}"
-    Invoke-WebRequest "${_sha_url}" -OutFile "${workdir}/hab-latest.${ext}.sha256sum"
-    #   archive="${workdir}/$(cut -d ' ' -f 3 hab-latest.${ext}.sha256sum)"
-    #   sha_file="${archive}.sha256sum"
+    $archive=""
+    $sha_file=$null
 
-    #   info "Renaming downloaded archive files"
-    #   mv -v "${workdir}/hab-latest.${ext}" "${archive}"
-    #   mv -v "${workdir}/hab-latest.${ext}.sha256sum" "${archive}.sha256sum"
+    # TODO: Back this out
+    if($validate_checksum) {
+        Invoke-WebRequest "${_sha_url}" -OutFile "${workdir}/hab-latest.${ext}.sha256sum"
+        # TODO: Parse things
+        #$archive="${workdir}/$(cut -d ' ' -f 3 hab-latest.${ext}.sha256sum)"
+        $sha_file="${archive}.sha256sum"
+    }
+    else {
+        $archive="${workdir}/hab-latest.${ext}"
+        $sha_file=$null
+    }
+    Move-Item -Path "${workdir}/hab-latest.${ext}" -Destination $archive
+    # TODO:  delete conditional wrapper
+    if($sha_file){
+        Move-Item -Path "${workdir}/hab-latest.${ext}.sha256sum" -Destination $sha_file
+    }
+    return @{
+        archive=$archive
+        sha_file=$sha_file
+    }
 }
 
-# verify_archive() {
-#   if command -v gpg >/dev/null; then
-#     info "GnuPG tooling found, verifying the shasum digest is properly signed"
-#     local _sha_sig_url="${url}.sha256sum.asc${query}"
-#     local _sha_sig_file="${archive}.sha256sum.asc"
-#     local _key_url="https://bintray.com/user/downloadSubjectPublicKey?username=habitat"
-#     local _key_file="${workdir}/habitat.asc"
+function Verify-Archive($files){
+    ## Dev Note ##
+    ## I'm not sure if gpg verification is an expected thing in windows.
+    ## Leaving bash code commented for reference and will circle up with
+    ## Matt to see what the expectation is.
+    ##
+    #   if command -v gpg >/dev/null; then
+    #     info "GnuPG tooling found, verifying the shasum digest is properly signed"
+    #     local _sha_sig_url="${url}.sha256sum.asc${query}"
+    #     local _sha_sig_file="${archive}.sha256sum.asc"
+    #     local _key_url="https://bintray.com/user/downloadSubjectPublicKey?username=habitat"
+    #     local _key_file="${workdir}/habitat.asc"
 
-#     dl_file "${_sha_sig_url}" "${_sha_sig_file}"
-#     dl_file "${_key_url}" "${_key_file}"
+    #     dl_file "${_sha_sig_url}" "${_sha_sig_file}"
+    #     dl_file "${_key_url}" "${_key_file}"
 
-#     gpg --no-permission-warning --dearmor "${_key_file}"
-#     gpg --no-permission-warning \
-#       --keyring "${_key_file}.gpg" --verify "${_sha_sig_file}"
-#   fi
+    #     gpg --no-permission-warning --dearmor "${_key_file}"
+    #     gpg --no-permission-warning \
+    #       --keyring "${_key_file}.gpg" --verify "${_sha_sig_file}"
+    #   fi
+    if($files['sha_file']){
+        $archive_sha_sum = (Get-FileHash -Algorithm SHA256 -Path $files['archive']).Hash.ToLower()
+        $sha_file_contents = (Get-Content -Path $files['sha_file']).ToLower()
+        if( -not $sha_file_contents.Contains($archive_sha_sum.Hash)){
+            throw "archive sha256sum does not match.`nexpected: ${sha_file_contents}`ngot: ${archive_sha_sum}"
+        }
+    }
+}
 
-#   info "Verifying the shasum digest matches the downloaded archive"
-#   ${shasum_cmd} -c "${sha_file}"
-# }
+function Extract-To-Directory($Path, $Destination){
+    $PSVersion = $PSVersionTable.PSVersion
+    if($PSVersion -ge [System.Version]"5.0"){
+        Expand-Archive $Path -DestinationPath $Destination
+    }
+    Else{
+        # .net 4.5 present, can load filesystem compression library
+        $compression_library_loaded = $false
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $compression_library_loaded = $true
+        }
+        catch {
+            Write-Host "Unable to load System.IO.Compression.FileSystem library (.net 4.5 required)"
+            $compression_library_loaded = $false
+        }
+        if($compression_library_loaded){
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($Path, $Destination)
+        }
+        else {
+            # default case, use expected prerequisite utility
+            # TODO: TBD
+            throw "generic zip not implemented"
+        }
+    }
+}
 
-# extract_archive() {
-#   need_cmd sed
+function Extract-Archive($files, $workdir, $platform) {
+    $arch = $platform['arch']
+    $sys = $platform['sys']
+    $archive = $files['archive']
+    Write-Host -ForegroundColor Green "Extracting ${archive}"
+    Extract-To-Directory -Path $archive -Destination $workdir
+    return (Get-ChildItem -Path . -Directory).FullName | ? { $_ -like "*\hab*-$arch-$sys"}
+}
 
-#   info "Extracting ${archive}"
-#   case "${ext}" in
-#     tar.gz)
-#       need_cmd zcat
-#       need_cmd tar
+function Install-Hab($BinDir){
 
-#       zcat "${archive}" | tar x -C "${workdir}"
-#       archive_dir="$(echo "${archive}" | sed 's/.tar.gz$//')"
-#       ;;
-#     zip)
-#       need_cmd unzip
-
-#       unzip "${archive}" -d "${workdir}"
-#       archive_dir="$(echo "${archive}" | sed 's/.zip$//')"
-#       ;;
-#     *)
-#       exit_with "Unrecognized file extension when extracting: ${ext}" 4
-#       ;;
-#   esac
-# }
-
+}
 # install_hab() {
 #   case "${sys}" in
 #     darwin)
@@ -231,12 +281,6 @@ function Download-Archive($btv, $platform, $workdir) {
 #   hab --version
 # }
 
-# need_cmd() {
-#   if ! command -v "$1" > /dev/null 2>&1; then
-#     exit_with "Required command '$1' not found on PATH" 127
-#   fi
-# }
-
 # info() {
 #   echo "--> hab-install: $1"
 # }
@@ -248,53 +292,6 @@ function Download-Archive($btv, $platform, $workdir) {
 # exit_with() {
 #   warn "$1"
 #   exit "${2:-10}"
-# }
-
-# dl_file() {
-#   local _url="${1}"
-#   local _dst="${2}"
-#   local _code
-#   local _wget_extra_args=""
-#   local _curl_extra_args=""
-
-#   # Attempt to download with wget, if found. If successful, quick return
-#   if command -v wget > /dev/null; then
-#     info "Downloading via wget: ${_url}"
-#     if [ -n "${SSL_CERT_FILE:-}" ]; then
-#       wget ${_wget_extra_args:+"--ca-certificate=${SSL_CERT_FILE}"} -q -O "${_dst}" "${_url}"
-#     else
-#       wget -q -O "${_dst}" "${_url}"
-#     fi
-#     _code="$?"
-#     if [ $_code -eq 0 ]; then
-#       return 0
-#     else
-#       local _e="wget failed to download file, perhaps wget doesn't have"
-#       _e="$_e SSL support and/or no CA certificates are present?"
-#       warn "$_e"
-#     fi
-#   fi
-
-#   # Attempt to download with curl, if found. If successful, quick return
-#   if command -v curl > /dev/null; then
-#     info "Downloading via curl: ${_url}"
-#     if [ -n "${SSL_CERT_FILE:-}" ]; then
-#       curl ${_curl_extra_args:+"--cacert ${SSL_CERT_FILE}"} -sSfL "${_url}" -o "${_dst}"
-#     else
-#       curl -sSfL "${_url}" -o "${_dst}"
-#     fi
-#     _code="$?"
-#     if [ $_code -eq 0 ]; then
-#       return 0
-#     else
-#       local _e="curl failed to download file, perhaps curl doesn't have"
-#       _e="$_e SSL support and/or no CA certificates are present?"
-#       warn "$_e"
-#     fi
-#   fi
-
-#   # If we reach this point, wget and curl have failed and we're out of options
-#   exit_with "Required: SSL-enabled 'curl' or 'wget' on PATH with" 6
 # }
 
 # main "$@" || exit 99
